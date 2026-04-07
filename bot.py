@@ -5,6 +5,7 @@ from config import (
     WS_URL, API_URL,
     FLOOR_DISCOUNT_PCT, MIN_FLOOR_EUR,
     RECONNECT_DELAY_SECONDS,
+    SPORTS, RARITIES,
 )
 from auth import authenticate
 from telegram_bot import notify_deal, notify_startup, notify_error
@@ -18,51 +19,82 @@ log = logging.getLogger("sorare_bot")
 
 AUD = "sorare-tg-bot"
 
-SUBSCRIPTION = """
-subscription OnNewOffer {
+# Mapping da config SPORTS -> enum GraphQL
+SPORT_ENUM = {
+    "football": "FOOTBALL",
+    "nba":      "NBA",
+    "baseball": "BASEBALL",
+}
+
+# Rarities config -> enum GraphQL (già lowercase nel config)
+RARITY_ENUM = {
+    "limited":    "limited",
+    "rare":       "rare",
+    "super_rare": "super_rare",
+    "unique":     "unique",
+}
+
+def _build_subscription() -> str:
+    sports_gql   = ", ".join(SPORT_ENUM[s] for s in SPORTS if s in SPORT_ENUM)
+    rarities_gql = ", ".join(RARITY_ENUM[r] for r in RARITIES if r in RARITY_ENUM)
+    return f"""
+subscription OnNewOffer {{
   anyCardWasUpdated(
     events: [offer_event_opened]
-    rarities: [limited]
-    sports: [FOOTBALL]
-  ) {
+    rarities: [{rarities_gql}]
+    sports: [{sports_gql}]
+  ) {{
     eventType
-    card {
+    card {{
       slug
       serialNumber
       rarityTyped
       seasonYear
       inSeasonEligible
       sport
-      anyPlayer {
+      anyPlayer {{
         slug
         displayName
-        activeClub { name }
-      }
-      liveSingleSaleOffer {
-        receiverSide { amounts { eurCents usdCents gbpCents referenceCurrency } }
-        sender { ... on User { slug } }
-      }
-    }
-  }
-}
+        activeClub {{ name }}
+      }}
+      liveSingleSaleOffer {{
+        receiverSide {{ amounts {{ eurCents usdCents gbpCents referenceCurrency }} }}
+        sender {{ ... on User {{ slug }} }}
+      }}
+    }}
+  }}
+}}
 """
 
-FLOOR_QUERY = """
-query GetFloor($slug: String!) {
-  anyPlayer(slug: $slug) {
-    inSeason: lowestPriceAnyCard(inSeason: true, rarity: limited) {
-      slug
-      liveSingleSaleOffer {
-        receiverSide {
-          amounts { eurCents usdCents gbpCents referenceCurrency }
+LIVE_LISTINGS_QUERY = """
+query GetPlayerLiveListings($playerSlug: String!, $sport: Sport!, $last: Int = 100) {
+  tokens {
+    liveSingleSaleOffers(
+      playerSlug: $playerSlug
+      sport: $sport
+      last: $last
+    ) {
+      nodes {
+        id
+        status
+        senderSide {
+          anyCards {
+            slug
+            serialNumber
+            rarityTyped
+            seasonYear
+            inSeasonEligible
+            grade
+            power
+          }
         }
-      }
-    }
-    classic: lowestPriceAnyCard(inSeason: false, rarity: limited) {
-      slug
-      liveSingleSaleOffer {
         receiverSide {
-          amounts { eurCents usdCents gbpCents referenceCurrency }
+          amounts {
+            eurCents
+            usdCents
+            gbpCents
+            wei
+          }
         }
       }
     }
@@ -92,23 +124,33 @@ def _update_fx_rates():
         time.sleep(86400)
 
 
-def to_eur(amounts: dict):
+def to_eur(amounts: dict) -> float | None:
     if amounts.get("eurCents"):
         return amounts["eurCents"] / 100
-    ref = (amounts.get("referenceCurrency") or "").upper()
     with _fx_lock:
-        if ref == "USD" and amounts.get("usdCents"):
+        if amounts.get("usdCents"):
             return (amounts["usdCents"] / 100) / _fx_rates["USD"]
-        if ref == "GBP" and amounts.get("gbpCents"):
+        if amounts.get("gbpCents"):
             return (amounts["gbpCents"] / 100) / _fx_rates["GBP"]
     return None
 
 
-def get_floor(player_slug: str, in_season: bool, new_card_slug: str, jwt: str):
+def get_all_listings(player_slug: str, sport: str, jwt: str) -> list[dict]:
+    """
+    Ritorna tutti i listing live del giocatore per un dato sport.
+    sport deve essere il valore enum GraphQL: FOOTBALL, NBA, BASEBALL
+    """
     try:
         resp = requests.post(
             API_URL,
-            json={"query": FLOOR_QUERY, "variables": {"slug": player_slug}},
+            json={
+                "query": LIVE_LISTINGS_QUERY,
+                "variables": {
+                    "playerSlug": player_slug,
+                    "sport": sport,
+                    "last": 100,
+                },
+            },
             headers={
                 "Authorization": f"Bearer {jwt}",
                 "JWT-AUD": AUD,
@@ -117,43 +159,73 @@ def get_floor(player_slug: str, in_season: bool, new_card_slug: str, jwt: str):
             timeout=10,
         )
         data = resp.json()
-        if not data.get("data") or not data["data"].get("anyPlayer"):
-            log.warning(f"[FLOOR] Risposta inattesa: {str(data)[:150]}")
-            return None
-
-        player_data = data["data"]["anyPlayer"]
-        floor_card = player_data.get("inSeason" if in_season else "classic")
-
-        if not floor_card:
-            log.info(f"[FLOOR] Nessuna carta attiva per {player_slug}")
-            return None
-
-        if floor_card.get("slug") == new_card_slug:
-            log.info("[FLOOR] La carta listata è già il floor — skip")
-            return None
-
-        amounts = (
-            (floor_card.get("liveSingleSaleOffer") or {})
-            .get("receiverSide", {})
-            .get("amounts") or {}
+        nodes = (
+            data.get("data", {})
+            .get("tokens", {})
+            .get("liveSingleSaleOffers", {})
+            .get("nodes", [])
         )
-        return to_eur(amounts)
+
+        listings = []
+        for node in nodes:
+            amounts = (node.get("receiverSide") or {}).get("amounts") or {}
+            price_eur = to_eur(amounts)
+            if not price_eur:
+                continue
+            cards = (node.get("senderSide") or {}).get("anyCards") or []
+            for card in cards:
+                listings.append({
+                    "slug":      card.get("slug", ""),
+                    "price_eur": price_eur,
+                    "rarity":    card.get("rarityTyped", ""),
+                    "in_season": card.get("inSeasonEligible", False),
+                    "season":    card.get("seasonYear", 0),
+                    "serial":    card.get("serialNumber", 0),
+                    "grade":     card.get("grade", 0),
+                    "power":     card.get("power", "1.000"),
+                })
+
+        log.info(f"[LISTINGS] {player_slug} ({sport}): {len(listings)} listing trovati")
+        return listings
 
     except Exception as e:
-        log.error(f"[FLOOR] Errore: {e}", exc_info=True)
+        log.error(f"[LISTINGS] Errore: {e}", exc_info=True)
+        return []
+
+
+def compute_floor(
+    listings: list[dict],
+    new_card_slug: str,
+    rarity: str,
+    in_season: bool,
+) -> float | None:
+    others = [
+        l for l in listings
+        if l["slug"] != new_card_slug
+        and l["rarity"] == rarity
+        and l["in_season"] == in_season
+    ]
+
+    tipo = "IS" if in_season else "Classic"
+    if not others:
+        log.info(f"[FLOOR] Nessun altro listing {tipo} rarity={rarity} oltre alla carta nuova")
         return None
+
+    floor = min(l["price_eur"] for l in others)
+    log.info(f"[FLOOR] Floor {tipo} calcolato su {len(others)} listing: €{floor:.2f}")
+    return floor
 
 
 card_queue = queue.Queue(maxsize=50)
 API_CALL_INTERVAL = 0.4
 
 
-def card_url(slug: str, sport: str = "football") -> str:
+def card_url(slug: str, sport: str = "FOOTBALL") -> str:
     base = {
-        "football": "https://sorare.com/football/cards",
-        "baseball": "https://sorare.com/mlb/cards",
-        "nba":      "https://sorare.com/nba/cards",
-    }.get(sport, "https://sorare.com/football/cards")
+        "FOOTBALL": "https://sorare.com/football/cards",
+        "BASEBALL": "https://sorare.com/mlb/cards",
+        "NBA":      "https://sorare.com/nba/cards",
+    }.get(sport.upper(), "https://sorare.com/football/cards")
     return f"{base}/{slug}"
 
 
@@ -162,7 +234,7 @@ def process_offer(event_data: dict, jwt: str):
     card_slug   = card.get("slug", "")
     serial      = card.get("serialNumber", "?")
     rarity      = (card.get("rarityTyped") or "").lower()
-    sport       = (card.get("sport") or "football").lower()
+    sport       = (card.get("sport") or "FOOTBALL").upper()   # FOOTBALL, NBA, BASEBALL
     in_season   = card.get("inSeasonEligible") or False
     player      = card.get("anyPlayer", {})
     player_name = player.get("displayName", "?")
@@ -178,9 +250,15 @@ def process_offer(event_data: dict, jwt: str):
         log.info("  → skip: prezzo non disponibile")
         return
 
-    floor_eur = get_floor(player_slug, in_season, card_slug, jwt)
+    # Listing filtrati per sport (passa enum GraphQL direttamente)
+    all_listings = get_all_listings(player_slug, sport, jwt)
+    if not all_listings:
+        log.info("  → skip: nessun listing trovato")
+        return
+
+    floor_eur = compute_floor(all_listings, card_slug, rarity, in_season)
     if not floor_eur:
-        log.info("  → skip: floor non disponibile")
+        log.info("  → skip: floor non calcolabile (unica carta listata per questo tipo)")
         return
 
     if floor_eur < MIN_FLOOR_EUR:
@@ -189,7 +267,7 @@ def process_offer(event_data: dict, jwt: str):
 
     discount_pct = (1 - price_eur / floor_eur) * 100
     tipo = "IS" if in_season else "Classic"
-    log.info(f"  [{tipo}] €{price_eur:.2f} | floor €{floor_eur:.2f} | sconto {discount_pct:.1f}%")
+    log.info(f"  [{sport}][{tipo}] €{price_eur:.2f} | floor €{floor_eur:.2f} | sconto {discount_pct:.1f}%")
 
     if discount_pct < FLOOR_DISCOUNT_PCT:
         log.info(f"  → skip: {discount_pct:.1f}% < soglia {FLOOR_DISCOUNT_PCT}%")
@@ -206,7 +284,7 @@ def process_offer(event_data: dict, jwt: str):
         discount_pct=discount_pct,
         seller_slug=seller_slug,
         card_url=card_url(card_slug, sport),
-        sport=sport,
+        sport=sport.lower(),
     )
 
 
@@ -224,9 +302,10 @@ def queue_worker(jwt: str):
 
 class SorareBot:
     def __init__(self, jwt: str):
-        self.jwt     = jwt
-        self.ws      = None
-        self.running = False
+        self.jwt          = jwt
+        self.ws           = None
+        self.running      = False
+        self.subscription = _build_subscription()
 
     def on_open(self, ws):
         log.info("WebSocket connesso")
@@ -239,13 +318,14 @@ class SorareBot:
             "command":    "message",
             "identifier": json.dumps({"channel": "GraphqlChannel"}),
             "data": json.dumps({
-                "query":         SUBSCRIPTION,
+                "query":         self.subscription,
                 "variables":     {},
                 "operationName": "OnNewOffer",
                 "action":        "execute",
             }),
         }))
-        log.info("Subscription attiva — in ascolto per offerte...")
+        sports_str = ", ".join(s.upper() for s in SPORTS)
+        log.info(f"Subscription attiva — sport: [{sports_str}]")
         notify_startup()
 
     def on_message(self, ws, message):
@@ -265,7 +345,8 @@ class SorareBot:
 
             player_name = event["card"].get("anyPlayer", {}).get("displayName", "?")
             serial      = event["card"].get("serialNumber", "?")
-            log.info(f"[EVENTO] {player_name} | limited #{serial}")
+            sport       = event["card"].get("sport", "?")
+            log.info(f"[EVENTO] {player_name} | {sport} | #{serial}")
 
             try:
                 card_queue.put_nowait(event)

@@ -8,27 +8,48 @@ log = logging.getLogger(__name__)
 
 TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
+# ID dei topic Telegram per ogni sport
+SPORT_THREAD_ID = {
+    "football": 87,
+    "nba":      3,
+    "baseball": 4,
+}
 
-def send_message(text: str, parse_mode: str = "HTML") -> bool:
-    """Manda un messaggio al tuo chat. Ritorna True se ok."""
+
+def send_message(
+    text: str,
+    parse_mode: str = "HTML",
+    thread_id: Optional[int] = None
+) -> bool:
+    """Manda un messaggio al gruppo/topic. Ritorna True se ok."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         log.warning("Telegram non configurato, skip notifica")
         return False
+
     try:
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        }
+
+        # 👇 QUESTO È IL FIX PER I TOPIC
+        if thread_id is not None:
+            payload["message_thread_id"] = thread_id
+
         resp = requests.post(
             f"{TG_API}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True,
-            },
+            json=payload,
             timeout=10,
         )
+
         if not resp.ok:
             log.error(f"Telegram error: {resp.text}")
             return False
+
         return True
+
     except Exception as e:
         log.error(f"Telegram exception: {e}")
         return False
@@ -45,6 +66,7 @@ def notify_deal(
     seller_slug: str,
     card_url: str,
     sport: str = "football",
+    thread_id: Optional[int] = None,   # 👈 AGGIUNTO
 ) -> bool:
     sport_emoji = {"football": "⚽", "baseball": "⚾", "nba": "🏀"}.get(sport, "🃏")
     rarity_emoji = {
@@ -66,12 +88,22 @@ def notify_deal(
         f"👤 Seller: <code>{seller_slug}</code>\n"
         f"🔗 <a href=\"{card_url}\">Apri su Sorare</a>"
     )
-    return send_message(text)
+
+    # auto-routing: se non è passato thread_id esplicito, usa quello dello sport
+    if thread_id is None:
+        thread_id = SPORT_THREAD_ID.get(sport)
+
+    return send_message(text, thread_id=thread_id)
 
 
-def notify_startup(sport: str = "football") -> None:
-    sport_emoji = {"football": "⚽", "baseball": "⚾", "nba": "🏀"}.get(sport, "🃏")
-    send_message(f"{sport_emoji} <b>Sorare Bot avviato</b> — in ascolto per affari sul mercato...")
+def notify_startup() -> None:
+    """Manda il messaggio di avvio in tutti i topic sport."""
+    for sport, thread_id in SPORT_THREAD_ID.items():
+        sport_emoji = {"football": "⚽", "baseball": "⚾", "nba": "🏀"}.get(sport, "🃏")
+        send_message(
+            f"{sport_emoji} <b>Sorare Bot avviato</b> — in ascolto per affari...",
+            thread_id=thread_id,
+        )
 
 
 def notify_error(msg: str) -> None:
@@ -79,7 +111,7 @@ def notify_error(msg: str) -> None:
 
 
 def get_my_chat_id() -> Optional[int]:
-    """Utility per trovare il proprio chat_id: manda /start al bot e chiama questa."""
+    """Utility per trovare il proprio chat_id."""
     try:
         resp = requests.get(f"{TG_API}/getUpdates", timeout=10)
         updates = resp.json().get("result", [])
