@@ -296,8 +296,12 @@ def compute_floor(
 
 card_queue = queue.Queue(maxsize=200)
 API_CALL_INTERVAL = 0.4
-NUM_WORKERS = 4
-HEARTBEAT_TIMEOUT_SECONDS = 90  # riconnette se nessun messaggio per 90s
+NUM_WORKERS = 2
+HEARTBEAT_TIMEOUT_SECONDS = 90
+
+# Deduplicazione: set degli slug già in coda
+_queued_slugs: set[str] = set()
+_queued_slugs_lock = threading.Lock()  # riconnette se nessun messaggio per 90s
 
 
 def card_url(slug: str, sport: str = "FOOTBALL") -> str:
@@ -371,11 +375,14 @@ def process_offer(event_data: dict, jwt: str):
 def queue_worker(jwt: str):
     while True:
         event_data = card_queue.get()
+        player_slug = (event_data.get("card", {}).get("anyPlayer") or {}).get("slug", "")
         try:
             process_offer(event_data, jwt)
         except Exception as e:
             log.error(f"Worker error: {e}", exc_info=True)
         finally:
+            with _queued_slugs_lock:
+                _queued_slugs.discard(player_slug)
             card_queue.task_done()
             time.sleep(API_CALL_INTERVAL)
 
@@ -452,13 +459,22 @@ class SorareBot:
                     pass  # se non parsabile, lascia passare
 
             player_name = event["card"].get("anyPlayer", {}).get("displayName", "?")
+            player_slug = event["card"].get("anyPlayer", {}).get("slug", "")
             serial = event["card"].get("serialNumber", "?")
             sport = event["card"].get("sport", "?")
             log.info(f"[EVENTO] {player_name} | {sport} | #{serial}")
 
+            with _queued_slugs_lock:
+                if player_slug in _queued_slugs:
+                    log.info(f"  → skip: {player_name} già in coda")
+                    return
+                _queued_slugs.add(player_slug)
+
             try:
                 card_queue.put_nowait(event)
             except queue.Full:
+                with _queued_slugs_lock:
+                    _queued_slugs.discard(player_slug)
                 log.warning(f"  → coda piena, scartato: {player_name}")
 
         except Exception as e:
