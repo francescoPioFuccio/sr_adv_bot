@@ -21,7 +21,7 @@ def _is_token_valid(token: str) -> bool:
         exp = payload.get("exp")
         if not exp:
             return True
-        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+        exp_dt = datetime.fromtimestamp(int(exp), tz=timezone.utc)
         remaining = exp_dt - datetime.now(timezone.utc)
         if remaining > timedelta(hours=1):
             log.info(f"JWT valido — scade tra {remaining.days} giorni")
