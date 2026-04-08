@@ -1,10 +1,37 @@
 import requests
 import bcrypt
 import logging
+import os
+from datetime import datetime, timezone, timedelta
 
 from config import AUTH_API_URL, SALT_URL
 
 log = logging.getLogger(__name__)
+
+
+def _is_token_valid(token: str) -> bool:
+    """Controlla se il JWT è ancora valido decodificando il payload (senza librerie esterne)."""
+    try:
+        import base64, json
+        payload_b64 = token.split(".")[1]
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = json.loads(base64.b64decode(payload_b64))
+        exp = payload.get("exp")
+        if not exp:
+            return True
+        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+        remaining = exp_dt - datetime.now(timezone.utc)
+        if remaining > timedelta(hours=1):
+            log.info(f"JWT valido — scade tra {remaining.days} giorni")
+            return True
+        else:
+            log.info("JWT scaduto o in scadenza, sarà rinnovato")
+            return False
+    except Exception as e:
+        log.warning(f"Impossibile verificare JWT: {e}")
+        return False
 
 
 def get_salt(email: str) -> str:
@@ -18,8 +45,22 @@ def hash_password(password: str, salt: str) -> str:
 
 
 def authenticate(email: str, password: str, aud: str = "sorare-tg-bot") -> str:
-    """Login Sorare con supporto 2FA. Restituisce JWT token."""
-    log.info(f"Autenticazione per {email}...")
+    """
+    Login Sorare con supporto 2FA e cache JWT.
+
+    Priorità:
+    1. Env var SORARE_JWT (impostata manualmente dopo il primo login)
+    2. Login vero con email/password + OTP se richiesto
+    """
+
+    # 1. Prova JWT cached da env var
+    cached_jwt = os.environ.get("SORARE_JWT", "").strip()
+    if cached_jwt and _is_token_valid(cached_jwt):
+        log.info("✅ Usando SORARE_JWT da env var — nessun login necessario")
+        return cached_jwt
+
+    # 2. Login vero
+    log.info(f"🔐 Autenticazione per {email}...")
     salt = get_salt(email)
     hashed_pw = hash_password(password, salt)
 
@@ -54,9 +95,6 @@ def authenticate(email: str, password: str, aud: str = "sorare-tg-bot") -> str:
         raise RuntimeError(f"Errore login: {non_2fa}")
 
     if otp_challenge:
-        # Su server non possiamo chiedere input interattivo — 
-        # il token OTP va passato come env var SORARE_OTP al primo avvio,
-        # oppure usiamo il flow senza 2FA se l'account è già whitelistato per IP.
         otp_code = _get_otp_code()
 
         mutation_otp = """
@@ -84,26 +122,29 @@ def authenticate(email: str, password: str, aud: str = "sorare-tg-bot") -> str:
         if sign_in2.get("errors"):
             raise RuntimeError(f"OTP errato: {sign_in2['errors']}")
 
-        token = sign_in2["jwtToken"]["token"]
-        slug  = sign_in2["currentUser"]["slug"]
+        token      = sign_in2["jwtToken"]["token"]
+        expired_at = sign_in2["jwtToken"]["expiredAt"]
+        slug       = sign_in2["currentUser"]["slug"]
     else:
-        token = sign_in["jwtToken"]["token"]
-        slug  = sign_in["currentUser"]["slug"]
+        token      = sign_in["jwtToken"]["token"]
+        expired_at = sign_in["jwtToken"]["expiredAt"]
+        slug       = sign_in["currentUser"]["slug"]
 
-    log.info(f"Autenticato come: {slug}")
+    log.info(f"✅ Autenticato come: {slug} — JWT valido fino a {expired_at}")
+
+    # Stampa il JWT nei log così puoi copiarlo e impostarlo come env var SORARE_JWT
+    print("\n" + "="*60)
+    print("🔑 COPIA QUESTO JWT E IMPOSTALO COME ENV VAR 'SORARE_JWT':")
+    print(f"\nSORALE_JWT={token}\n")
+    print(f"Scadenza: {expired_at}")
+    print("="*60 + "\n")
+
     return token
 
 
 def _get_otp_code() -> str:
-    """
-    Recupera il codice OTP:
-    - Se c'è la env var SORARE_OTP la usa (utile per il primo deploy)
-    - Altrimenti chiede input da console (utile in locale)
-    """
-    import os
     otp = os.environ.get("SORARE_OTP", "").strip()
     if otp:
         log.info("OTP letto da env var SORARE_OTP")
         return otp
-    # fallback interattivo (solo in locale)
     return input("Codice OTP (6 cifre): ").strip()
