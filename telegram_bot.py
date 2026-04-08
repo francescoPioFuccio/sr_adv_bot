@@ -34,7 +34,6 @@ def send_message(
             "disable_web_page_preview": True,
         }
 
-        # 👇 QUESTO È IL FIX PER I TOPIC
         if thread_id is not None:
             payload["message_thread_id"] = thread_id
 
@@ -66,14 +65,14 @@ def notify_deal(
     seller_slug: str,
     card_url: str,
     sport: str = "football",
-    thread_id: Optional[int] = None,   # 👈 AGGIUNTO
+    thread_id: Optional[int] = None,
 ) -> bool:
     sport_emoji = {"football": "⚽", "baseball": "⚾", "nba": "🏀"}.get(sport, "🃏")
     rarity_emoji = {
         "limited":    "🟡",
         "rare":       "🔴",
-        "super_rare": "🟣",
-        "unique":     "⚫",
+        "super_rare": "🔵",
+        "unique":     "🟣",
     }.get(rarity.lower(), "⚪")
 
     floor_str = f"€{floor_eur:.2f}" if floor_eur else "N/D"
@@ -89,7 +88,6 @@ def notify_deal(
         f"🔗 <a href=\"{card_url}\">Apri su Sorare</a>"
     )
 
-    # auto-routing: se non è passato thread_id esplicito, usa quello dello sport
     if thread_id is None:
         thread_id = SPORT_THREAD_ID.get(sport)
 
