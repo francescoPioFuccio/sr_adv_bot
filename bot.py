@@ -245,21 +245,51 @@ def compute_floor(
         rarity: str,
         in_season: bool,
 ) -> float | None:
-    others = [
-        l for l in listings
-        if l["slug"] != new_card_slug
-           and l["rarity"] == rarity
-           and l["in_season"] == in_season
-    ]
+    if in_season:
+        # IS: floor solo tra le altre IS
+        others = [
+            l for l in listings
+            if l["slug"] != new_card_slug
+               and l["rarity"] == rarity
+               and l["in_season"] == True
+        ]
+        if not others:
+            log.info(f"[FLOOR] Nessun altro listing IS rarity={rarity} oltre alla carta nuova")
+            return None
+        floor = min(l["price_eur"] for l in others)
+        log.info(f"[FLOOR] Floor IS calcolato su {len(others)} listing: €{floor:.2f}")
+        return floor
+    else:
+        # Classic: floor = min(floor_classic, floor_IS) perché le IS sono intercambiabili
+        classic_others = [
+            l for l in listings
+            if l["slug"] != new_card_slug
+               and l["rarity"] == rarity
+               and l["in_season"] == False
+        ]
+        is_others = [
+            l for l in listings
+            if l["rarity"] == rarity
+               and l["in_season"] == True
+        ]
 
-    tipo = "IS" if in_season else "Classic"
-    if not others:
-        log.info(f"[FLOOR] Nessun altro listing {tipo} rarity={rarity} oltre alla carta nuova")
-        return None
+        floors = []
+        if classic_others:
+            floor_classic = min(l["price_eur"] for l in classic_others)
+            floors.append(floor_classic)
+            log.info(f"[FLOOR] Floor Classic su {len(classic_others)} listing: €{floor_classic:.2f}")
+        if is_others:
+            floor_is = min(l["price_eur"] for l in is_others)
+            floors.append(floor_is)
+            log.info(f"[FLOOR] Floor IS (riferimento) su {len(is_others)} listing: €{floor_is:.2f}")
 
-    floor = min(l["price_eur"] for l in others)
-    log.info(f"[FLOOR] Floor {tipo} calcolato su {len(others)} listing: €{floor:.2f}")
-    return floor
+        if not floors:
+            log.info(f"[FLOOR] Nessun listing rarity={rarity} oltre alla carta nuova")
+            return None
+
+        floor = min(floors)
+        log.info(f"[FLOOR] Floor effettivo Classic (min tra Classic e IS): €{floor:.2f}")
+        return floor
 
 
 card_queue = queue.Queue(maxsize=50)
