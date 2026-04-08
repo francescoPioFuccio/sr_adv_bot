@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""
+Test offline della conversione wei → EUR
+Simula il comportamento della funzione to_eur() con prezzi ETH di esempio
+"""
+
+# Simula il prezzo ETH corrente (€1800 come esempio)
+ETH_PRICE_EUR = 1800.0
+
+def to_eur_test(amounts: dict, eth_price: float = ETH_PRICE_EUR) -> float | None:
+    """Versione test della funzione to_eur con supporto wei"""
+    if amounts.get("eurCents"):
+        return amounts["eurCents"] / 100
+    if amounts.get("usdCents"):
+        return (amounts["usdCents"] / 100) / 1.08  # esempio USD rate
+    if amounts.get("gbpCents"):
+        return (amounts["gbpCents"] / 100) / 0.86  # esempio GBP rate
+    if amounts.get("wei"):
+        eth = int(amounts["wei"]) / 1e18  # wei → ETH
+        return eth * eth_price             # ETH → EUR
+    return None
+
+
+# Test cases
+print("🧪 Test conversioni valute → EUR")
+print("=" * 70)
+print(f"Prezzo ETH simulato: €{ETH_PRICE_EUR:.2f}")
+print("-" * 70)
+
+test_cases = [
+    {
+        "name": "EUR (cents)",
+        "amounts": {"eurCents": 500},
+        "expected": 5.00
+    },
+    {
+        "name": "USD (cents)",
+        "amounts": {"usdCents": 540},
+        "expected": 5.00
+    },
+    {
+        "name": "Wei - Caso #25 (0.0022 ETH)",
+        "amounts": {"wei": "2200000000000000"},
+        "expected": 3.96
+    },
+    {
+        "name": "Wei - 1 ETH",
+        "amounts": {"wei": "1000000000000000000"},
+        "expected": 1800.00
+    },
+    {
+        "name": "Wei - 0.5 ETH",
+        "amounts": {"wei": "500000000000000000"},
+        "expected": 900.00
+    },
+    {
+        "name": "Wei - 0.01 ETH",
+        "amounts": {"wei": "10000000000000000"},
+        "expected": 18.00
+    },
+    {
+        "name": "Wei - 0.001 ETH (small offer)",
+        "amounts": {"wei": "1000000000000000"},
+        "expected": 1.80
+    },
+]
+
+passed = 0
+failed = 0
+
+for test in test_cases:
+    result = to_eur_test(test["amounts"])
+    expected = test["expected"]
+
+    # Tolleranza di 0.01 EUR per arrotondamenti
+    tolerance = 0.01
+    is_ok = abs(result - expected) < tolerance if result else False
+
+    status = "✅" if is_ok else "❌"
+    if is_ok:
+        passed += 1
+    else:
+        failed += 1
+
+    print(f"\n{status} {test['name']}")
+    print(f"   Input:    {test['amounts']}")
+    print(f"   Atteso:   €{expected:.2f}")
+    print(f"   Ottenuto: €{result:.2f}" if result else "   Ottenuto: None")
+
+    # Se è wei, mostra anche la conversione intermedia
+    if test["amounts"].get("wei"):
+        wei = int(test["amounts"]["wei"])
+        eth = wei / 1e18
+        print(f"   Passaggi: {wei} wei → {eth:.6f} ETH → €{result:.2f}")
+
+print("\n" + "=" * 70)
+print(f"📊 Risultati: {passed}/{len(test_cases)} test passati")
+if failed == 0:
+    print("✅ Tutti i test sono passati!")
+else:
+    print(f"❌ {failed} test falliti")
