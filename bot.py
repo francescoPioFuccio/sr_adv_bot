@@ -1,4 +1,5 @@
 import json, logging, time, threading, queue, requests, websocket
+from datetime import datetime, timezone, timedelta
 import os # <--- Aggiunto per leggere la porta di Render
 from flask import Flask # <--- Nuova dipendenza per il web server
 
@@ -76,6 +77,7 @@ subscription OnNewOffer {{
         activeClub {{ name }}
       }}
       liveSingleSaleOffer {{
+        createdAt
         receiverSide {{ amounts {{ eurCents usdCents gbpCents referenceCurrency }} }}
         sender {{ ... on User {{ slug }} }}
       }}
@@ -292,8 +294,10 @@ def compute_floor(
         return floor
 
 
-card_queue = queue.Queue(maxsize=50)
+card_queue = queue.Queue(maxsize=200)
 API_CALL_INTERVAL = 0.4
+NUM_WORKERS = 4
+HEARTBEAT_TIMEOUT_SECONDS = 90  # riconnette se nessun messaggio per 90s
 
 
 def card_url(slug: str, sport: str = "FOOTBALL") -> str:
@@ -382,9 +386,23 @@ class SorareBot:
         self.ws = None
         self.running = False
         self.subscription = _build_subscription()
+        self.last_message_time = time.time()
+
+    def heartbeat_watchdog(self):
+        """Forza riconnessione se nessun messaggio arriva entro HEARTBEAT_TIMEOUT_SECONDS."""
+        while self.running:
+            time.sleep(30)
+            silence = time.time() - self.last_message_time
+            if silence > HEARTBEAT_TIMEOUT_SECONDS:
+                log.warning(f"[WATCHDOG] Nessun messaggio da {int(silence)}s — forzo riconnessione")
+                try:
+                    self.ws.close()
+                except Exception:
+                    pass
 
     def on_open(self, ws):
         log.info("WebSocket connesso")
+        self.last_message_time = time.time()
         ws.send(json.dumps({
             "command": "subscribe",
             "identifier": json.dumps({"channel": "GraphqlChannel"}),
@@ -406,6 +424,7 @@ class SorareBot:
 
     def on_message(self, ws, message):
         try:
+            self.last_message_time = time.time()
             data = json.loads(message)
             msg_type = data.get("type", "")
             if msg_type == "ping":
@@ -418,6 +437,19 @@ class SorareBot:
             event = msg.get("result", msg).get("data", {}).get("anyCardWasUpdated")
             if not event or not event.get("card"):
                 return
+
+            # Filtro createdAt: scarta offerte più vecchie di 5 minuti
+            live_offer = event["card"].get("liveSingleSaleOffer") or {}
+            created_at_str = live_offer.get("createdAt")
+            if created_at_str:
+                try:
+                    created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                    age = datetime.now(timezone.utc) - created_at
+                    if age > timedelta(minutes=5):
+                        log.info(f"  → skip: offerta vecchia {int(age.total_seconds()//60)}min")
+                        return
+                except Exception:
+                    pass  # se non parsabile, lascia passare
 
             player_name = event["card"].get("anyPlayer", {}).get("displayName", "?")
             serial = event["card"].get("serialNumber", "?")
@@ -443,6 +475,8 @@ class SorareBot:
 
     def start(self):
         self.running = True
+        self.last_message_time = time.time()
+        threading.Thread(target=self.heartbeat_watchdog, daemon=True).start()
         self.ws = websocket.WebSocketApp(
             WS_URL,
             header={
@@ -477,8 +511,9 @@ def main():
     threading.Thread(target=_update_fx_rates, daemon=True).start()
     log.info("[FX] Thread tassi avviato")
 
-    threading.Thread(target=queue_worker, args=(jwt,), daemon=True).start()
-    log.info("[WORKER] Thread coda avviato")
+    for i in range(NUM_WORKERS):
+        threading.Thread(target=queue_worker, args=(jwt,), daemon=True).start()
+    log.info(f"[WORKER] {NUM_WORKERS} worker paralleli avviati")
 
     bot = SorareBot(jwt)
     try:
