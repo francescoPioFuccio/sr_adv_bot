@@ -396,16 +396,23 @@ class SorareBot:
         self.last_message_time = time.time()
 
     def heartbeat_watchdog(self):
-        """Forza riconnessione se nessun messaggio arriva entro HEARTBEAT_TIMEOUT_SECONDS."""
-        while self.running:
+        while True:
             time.sleep(30)
+
             silence = time.time() - self.last_message_time
+
             if silence > HEARTBEAT_TIMEOUT_SECONDS:
-                log.warning(f"[WATCHDOG] Nessun messaggio da {int(silence)}s — forzo riconnessione")
+                log.warning(f"[WATCHDOG] FREEZE DETECTED ({int(silence)}s) — HARD RESTART")
+
                 try:
-                    self.ws.close()
-                except Exception:
+                    if self.ws:
+                        self.ws.keep_running = False
+                        self.ws.close()
+                except:
                     pass
+
+                # 🔥 IMPORTANTISSIMO: esci dal thread
+                return
 
     def on_open(self, ws):
         log.info("WebSocket connesso")
@@ -490,22 +497,30 @@ class SorareBot:
             self.start()
 
     def start(self):
-        self.running = True
-        self.last_message_time = time.time()
-        threading.Thread(target=self.heartbeat_watchdog, daemon=True).start()
-        self.ws = websocket.WebSocketApp(
-            WS_URL,
-            header={
-                "Authorization": f"Bearer {self.jwt}",
-                "Origin": "https://sorare.com",
-            },
-            on_open=self.on_open,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-            subprotocols=["actioncable-v1-json"],
-        )
-        self.ws.run_forever(ping_interval=30, ping_timeout=10)
+        while True:
+            self.running = True
+            self.last_message_time = time.time()
+
+            threading.Thread(target=self.heartbeat_watchdog, daemon=True).start()
+
+            self.ws = websocket.WebSocketApp(
+                WS_URL,
+                header={
+                    "Authorization": f"Bearer {self.jwt}",
+                    "Origin": "https://sorare.com",
+                },
+                on_open=self.on_open,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                subprotocols=["actioncable-v1-json"],
+            )
+
+            log.info("🔌 Connessione WS...")
+            self.ws.run_forever(ping_interval=30, ping_timeout=10)
+
+            log.warning(f"🔁 WS terminato — retry tra {RECONNECT_DELAY_SECONDS}s")
+            time.sleep(RECONNECT_DELAY_SECONDS)
 
     def stop(self):
         self.running = False
