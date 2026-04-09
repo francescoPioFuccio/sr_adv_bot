@@ -12,16 +12,16 @@ SORARE_OTP = os.environ.get("SORARE_OTP", "")
 # ── Sport da monitorare ───────────────────────────────────────────────────────
 # Valori validi: "football", "nba", "baseball"
 # Mapping interno -> enum GraphQL: football=FOOTBALL, nba=NBA, baseball=BASEBALL
-SPORTS = ["football", "nba", "baseball"]
+SPORTS = ["nba", "baseball"]
 
 # ── Filtri di notifica ────────────────────────────────────────────────────────
 FLOOR_DISCOUNT_PCT = 15
 MIN_FLOOR_EUR = 0.1
 RARITIES = {
     "limited",
-    "rare",
-    "super_rare",
-    "unique",
+    #"rare",
+    #"super_rare",
+    #"unique",
 }
 
 # ── WebSocket / API ───────────────────────────────────────────────────────────
