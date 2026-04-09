@@ -206,7 +206,23 @@ def get_all_listings(player_slug: str, sport: str, jwt: str) -> list[dict]:
             },
             timeout=10,
         )
+
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After", "?")
+            log.warning(f"[LISTINGS] ⚠️ 429 RATE LIMIT per {player_slug} ({sport}) — Retry-After: {retry_after}s")
+            return []
+
+        if not resp.ok:
+            log.error(f"[LISTINGS] ❌ HTTP {resp.status_code} per {player_slug} ({sport}): {resp.text[:200]}")
+            return []
+
         data = resp.json()
+
+        # Errori GraphQL espliciti (es. 429 wrappato nel body)
+        if "errors" in data:
+            log.error(f"[LISTINGS] ❌ Errore GraphQL per {player_slug} ({sport}): {data['errors']}")
+            return []
+
         nodes = (
             data.get("data", {})
             .get("tokens", {})
@@ -237,7 +253,7 @@ def get_all_listings(player_slug: str, sport: str, jwt: str) -> list[dict]:
         return listings
 
     except Exception as e:
-        log.error(f"[LISTINGS] Errore: {e}", exc_info=True)
+        log.error(f"[LISTINGS] ❌ Eccezione per {player_slug} ({sport}): {e}", exc_info=True)
         return []
 
 
