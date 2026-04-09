@@ -503,6 +503,13 @@ class SorareBot:
                 except Exception:
                     pass  # se non parsabile, lascia passare
 
+            # Filtro prezzo PRIMA di mettere in coda — evita sprechi di coda e API
+            live_offer_pre = event["card"].get("liveSingleSaleOffer") or {}
+            price_amounts_pre = (live_offer_pre.get("receiverSide") or {}).get("amounts") or {}
+            price_eur_pre = to_eur(price_amounts_pre)
+            if not price_eur_pre or price_eur_pre < MIN_PRICE_EUR:
+                return
+
             player_name = event["card"].get("anyPlayer", {}).get("displayName", "?")
             player_slug = event["card"].get("anyPlayer", {}).get("slug", "")
             serial = event["card"].get("serialNumber", "?")
