@@ -6,7 +6,7 @@ from flask import Flask # <--- Nuova dipendenza per il web server
 from config import (
     SORARE_EMAIL, SORARE_PASSWORD,
     WS_URL, API_URL,
-    FLOOR_DISCOUNT_PCT, MIN_FLOOR_EUR,
+    FLOOR_DISCOUNT_PCT, MIN_FLOOR_EUR, MIN_PRICE_EUR,
     RECONNECT_DELAY_SECONDS,
     SPORTS, RARITIES,
 )
@@ -187,7 +187,18 @@ def get_all_listings(player_slug: str, sport: str, jwt: str) -> list[dict]:
     """
     Ritorna tutti i listing live del giocatore per un dato sport.
     sport deve essere il valore enum GraphQL: FOOTBALL, NBA, BASEBALL
+    Usa una cache TTL=10min per evitare 429.
     """
+    cache_key = (player_slug, sport)
+    now = time.time()
+
+    with _listings_cache_lock:
+        cached = _listings_cache.get(cache_key)
+        if cached and (now - cached["ts"]) < LISTINGS_CACHE_TTL:
+            age = int(now - cached["ts"])
+            log.info(f"[LISTINGS] {player_slug} ({sport}): {len(cached['listings'])} listing da cache (eta {age}s)")
+            return cached["listings"]
+
     try:
         resp = requests.post(
             API_URL,
@@ -249,7 +260,9 @@ def get_all_listings(player_slug: str, sport: str, jwt: str) -> list[dict]:
                     "power": card.get("power", "1.000"),
                 })
 
-        log.info(f"[LISTINGS] {player_slug} ({sport}): {len(listings)} listing trovati")
+        log.info(f"[LISTINGS] {player_slug} ({sport}): {len(listings)} listing trovati -- salvati in cache")
+        with _listings_cache_lock:
+            _listings_cache[cache_key] = {"ts": time.time(), "listings": listings}
         return listings
 
     except Exception as e:
@@ -317,7 +330,12 @@ HEARTBEAT_TIMEOUT_SECONDS = 90
 
 # Deduplicazione: set degli slug già in coda
 _queued_slugs: set[str] = set()
-_queued_slugs_lock = threading.Lock()  # riconnette se nessun messaggio per 90s
+_queued_slugs_lock = threading.Lock()
+
+# Cache listings: key = (player_slug, sport) -> {"ts": float, "listings": list}
+_listings_cache: dict[tuple, dict] = {}
+_listings_cache_lock = threading.Lock()
+LISTINGS_CACHE_TTL = 600  # 10 minuti
 
 
 def card_url(slug: str, sport: str = "FOOTBALL") -> str:
@@ -348,6 +366,10 @@ def process_offer(event_data: dict, jwt: str):
     price_eur = to_eur(price_amounts)
     if not price_eur or price_eur <= 0:
         log.info("  → skip: prezzo non disponibile")
+        return
+
+    if price_eur < MIN_PRICE_EUR:
+        log.info(f"  → skip: prezzo €{price_eur:.2f} < minimo €{MIN_PRICE_EUR}")
         return
 
     # Listing filtrati per sport (passa enum GraphQL direttamente)

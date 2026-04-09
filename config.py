@@ -16,6 +16,7 @@ SPORTS = ["football", "nba", "baseball"]
 
 # ── Filtri di notifica ────────────────────────────────────────────────────────
 FLOOR_DISCOUNT_PCT = 15
+MIN_PRICE_EUR = 5.0   # scarta eventi sotto questa soglia PRIMA di chiamare l'API
 MIN_FLOOR_EUR = 0.1
 RARITIES = {
     "limited",
