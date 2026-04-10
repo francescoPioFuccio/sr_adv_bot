@@ -17,6 +17,7 @@ SPORTS = ["nba", "baseball"]
 # ── Filtri di notifica ────────────────────────────────────────────────────────
 FLOOR_DISCOUNT_PCT = 15
 MIN_FLOOR_EUR = 0.1
+MIN_PRICE_EUR=5
 RARITIES = {
     "limited",
     #"rare",
