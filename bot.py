@@ -334,7 +334,7 @@ def compute_floor(
 
 card_queue = queue.Queue(maxsize=200)
 API_CALL_INTERVAL = 0.4
-NUM_WORKERS = 2
+NUM_WORKERS = 1
 HEARTBEAT_TIMEOUT_SECONDS = 90
 
 # Deduplicazione: set degli slug già in coda
