@@ -199,6 +199,15 @@ def get_all_listings(player_slug: str, sport: str, jwt: str) -> list[dict]:
             log.info(f"[LISTINGS] {player_slug} ({sport}): {len(cached['listings'])} listing da cache (eta {age}s)")
             return cached["listings"]
 
+    # Rate limiter globale: rispetta il limite 60 req/min di Sorare
+    global _api_last_call_ts
+    with _api_rate_lock:
+        now_rl = time.time()
+        elapsed = now_rl - _api_last_call_ts
+        if elapsed < API_MIN_INTERVAL:
+            time.sleep(API_MIN_INTERVAL - elapsed)
+        _api_last_call_ts = time.time()
+
     try:
         resp = requests.post(
             API_URL,
@@ -336,6 +345,11 @@ _queued_slugs_lock = threading.Lock()
 _listings_cache: dict[tuple, dict] = {}
 _listings_cache_lock = threading.Lock()
 LISTINGS_CACHE_TTL = 600  # 10 minuti
+
+# Rate limiter: max 1 chiamata API al secondo (limite JWT Sorare: 60/min)
+_api_rate_lock = threading.Lock()
+_api_last_call_ts: float = 0.0
+API_MIN_INTERVAL = 1.1  # secondi tra una chiamata e l'altra (60/min con margine)
 
 
 def card_url(slug: str, sport: str = "FOOTBALL") -> str:
