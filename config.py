@@ -12,7 +12,7 @@ SORARE_OTP = os.environ.get("SORARE_OTP", "")
 # ── Sport da monitorare ───────────────────────────────────────────────────────
 # Valori validi: "football", "nba", "baseball"
 # Mapping interno -> enum GraphQL: football=FOOTBALL, nba=NBA, baseball=BASEBALL
-SPORTS = ["nba", "baseball"]
+SPORTS = ["football","nba", "baseball"]
 
 # ── Filtri di notifica ────────────────────────────────────────────────────────
 FLOOR_DISCOUNT_PCT = 15
